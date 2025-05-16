@@ -29,6 +29,8 @@ volatile int  sampleCount;
 
 
 void init(void);
+void initGPIO(void);
+void initADC(void);
 
 int main(void){
     init();
@@ -61,17 +63,28 @@ void init(void) {
 
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
 
+    initGPIO();
+    initADC();
+    
+}
+
+void initGPIO(void){
+
     //Configure GPIO
     P1DIR |= BIT5;              //Change P1.5(RUN LED) direction to output
     P1OUT |= BIT5;              //Set P1.5 HIGH
     P1DIR |= BIT7;              //Change P1.7(RUN LED) direction to output
     P1OUT &= ~BIT7;             //Set P1.7 LOW
 
-    // Configure ADC A3(INPUT) pin
+    // Configure GPIO to ADC A0(VEREF+) A2(VEREF-) A3(INPUT) pins
     SYSCFG2 |= ADCPCTL0 | ADCPCTL2 | ADCPCTL3;
                                    
     // Disable GPIO High-Z protection
     PM5CTL0 &= ~LOCKLPM5;
+
+}
+
+void initADC(void){
 
     // Configure ADC
     ADCCTL0 |= ADCSHT_2 | ADCON;        // ADCON, S&H=16 ADC clks
@@ -79,6 +92,7 @@ void init(void) {
     ADCCTL2 |= ADCRES;                  // 10-bit conversion results
     ADCIE |= ADCIE0;                    // Enable ADC conv complete interrupt
     ADCMCTL0 |= ADCINCH_3 | ADCSREF_2;  // A3 ADC input select; Vref=VEREF+ and VEREF-
+
 }
 
 
