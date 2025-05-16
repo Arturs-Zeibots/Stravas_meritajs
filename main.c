@@ -17,22 +17,43 @@ UART TX -> P2.6
 */
 
 #include <msp430.h>
+#include <stdint.h>
 
-int adcResult;
+#define WINDOW_SIZE 1000
+#define IDLE_POINT 515 //using VREF/2=1.5V midpoint the ADC value =
+
+volatile int  adcResult;
+volatile int  maxInWindow;
+volatile int  sampleCount;
+
+
 
 void init(void);
-int adcSample(void);
 
 int main(void){
     init();
-
+    __enable_interrupt();
     while(1){
 
-        ADCCTL0 |= ADCENC | ADCSC;
-        __bis_SR_register(LPM0_bits | GIE); 
-        P1OUT ^= BIT5;
+        // reset window
+        maxInWindow  = 0;
+        sampleCount  = 0;
+
+        // collect WINDOW_SIZE samples
+        while(sampleCount < WINDOW_SIZE){
+            ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+            __bis_SR_register(LPM0_bits);    // sleep until ISR wakes us
+        }
+
+        //maxInWindow is max value attained in the window
+        if(maxInWindow > 10){
+            P1OUT &= ~BIT5;
+               // turn on RELAY control as an example
+        } else {
+            P1OUT |= BIT5;
+        }
+
         __delay_cycles(500000);
-        printf(adcResult);
     }
 }
 
@@ -40,11 +61,14 @@ void init(void) {
 
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
 
+    //Configure GPIO
     P1DIR |= BIT5;              //Change P1.5(RUN LED) direction to output
     P1OUT |= BIT5;              //Set P1.5 HIGH
+    P1DIR |= BIT7;              //Change P1.7(RUN LED) direction to output
+    P1OUT &= ~BIT7;             //Set P1.7 LOW
 
     // Configure ADC A3(INPUT) pin
-    SYSCFG2 |= ADCPCTL3;
+    SYSCFG2 |= ADCPCTL0 | ADCPCTL2 | ADCPCTL3;
                                    
     // Disable GPIO High-Z protection
     PM5CTL0 &= ~LOCKLPM5;
@@ -54,16 +78,9 @@ void init(void) {
     ADCCTL1 |= ADCSHP;                  // ADCCLK = MODOSC; sampling timer
     ADCCTL2 |= ADCRES;                  // 10-bit conversion results
     ADCIE |= ADCIE0;                    // Enable ADC conv complete interrupt
-    ADCMCTL0 |= ADCINCH_3 | ADCSREF_7;  // A3 ADC input select; Vref=VEREF+ and VEREF-
+    ADCMCTL0 |= ADCINCH_3 | ADCSREF_2;  // A3 ADC input select; Vref=VEREF+ and VEREF-
 }
 
-/*int adcSample(void){
-    int adcSampleValue = 0;
-     
-
-    return adcSampleValue;
-
-}*/
 
 // ADC interrupt service routine
 #if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
@@ -90,11 +107,16 @@ void __attribute__ ((interrupt(ADC_VECTOR))) ADC_ISR (void)
         case ADCIV_ADCINIFG:
             break;                              
         case ADCIV_ADCIFG:
-            adcResult = ADCMEM0;               
-            __bic_SR_register_on_exit(LPM0_bits);              // Clear CPUOFF bit from LPM0
+            adcResult = ADCMEM0;
+        if (adcResult > maxInWindow) {
+            maxInWindow = abs(adcResult-IDLE_POINT);
+        }
+        sampleCount++;
+        __bic_SR_register_on_exit(LPM0_bits);  // wake main()            // Clear CPUOFF bit from LPM0
             break;             
         default:
             break; 
     }  
 }
+
 
