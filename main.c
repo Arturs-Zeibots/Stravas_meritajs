@@ -18,6 +18,7 @@ UART TX -> P2.6
 
 #include <msp430.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #define WINDOW_SIZE 1000
 #define IDLE_POINT 515 //using VREF/2=1.5V midpoint the ADC value =
