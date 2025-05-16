@@ -1,3 +1,0 @@
-[submodule "libraries/Modbus-Slave"]
-	path = libraries/Modbus-Slave
-	url = https://github.com/unparallel-innovation/Modbus-Slave.git
