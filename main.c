@@ -1,8 +1,8 @@
 /*
 Software for a current measurement module I created for my bachelor's thesis
-----------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 PIN CONNECTIONS
-----------------------------------------------------------------------------
+--------------------------------------------------------------------------------
 RUN LED   ->     P1.5
 ADC INPUT ->     P1.3 A3
 VEREF+    ->     P1.0 A0
@@ -15,11 +15,13 @@ XTAL- -> P2.1
 UART RX -> P2.5
 UART TX -> P2.6
 */
-
+//INCLUDE HEADERS
 #include <msp430.h>
 #include <stdint.h>
 #include <stdio.h>
 
+//DEFINITIONS
+#define MCLK_FREQ_MHZ 1
 #define WINDOW_SIZE 1000
 #define IDLE_POINT 515 //using VREF/2=1.5V midpoint the ADC value =
 
@@ -27,12 +29,20 @@ volatile int  adcResult;
 volatile int  maxInWindow;
 volatile int  sampleCount;
 
+//STUFF
+void Software_Trim(void);
+int fputc(int c, FILE *stream);
 
-
+//INITIAL FUNCTIONS DEFINITIONS
 void init(void);
+void initEXTCLK(void);
 void initGPIO(void);
 void initADC(void);
+void initUART(void);
 
+//--------------------------------------------------------------------------------
+//MAIN
+//--------------------------------------------------------------------------------
 int main(void){
     init();
     __enable_interrupt();
@@ -60,6 +70,10 @@ int main(void){
     }
 }
 
+//--------------------------------------------------------------------------------
+//INITIALIZATION FUNCTIONS
+//--------------------------------------------------------------------------------
+//PRIMARY INIT
 void init(void) {
 
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
@@ -68,7 +82,37 @@ void init(void) {
     initADC();
     
 }
+//INIT EXTERNAL CLOCK
+void initEXTCLK(void){
 
+    // XT1 crystal on P2.0/P2.1
+    P2SEL0 |= BIT0 | BIT1;
+    // Clear fault flags
+    do {
+        CSCTL7 &= ~(XT1OFFG | DCOFFG);
+        SFRIFG1 &= ~OFIFG;
+    } while (SFRIFG1 & OFIFG);
+
+    // Disable FLL
+    __bis_SR_register(SCG0);
+    CSCTL3 = SELREF__XT1CLK;                // XT1 as FLL reference
+    CSCTL1 = DCOFTRIMEN | DCOFTRIM0 | DCOFTRIM1 | DCORSEL_0;
+    CSCTL2 = FLLD_0 + 30;                   // DCODIV = 1MHz
+    __delay_cycles(3);
+    // Enable FLL
+    __bic_SR_register(SCG0);
+
+    Software_Trim();                        // Trim DCO
+
+    // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
+    CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
+
+    // Enable oscillator fault interrupt
+    SFRIE1 |= OFIE;
+}
+
+
+//INIT GPIO PINS
 void initGPIO(void){
 
     //Configure GPIO
@@ -84,7 +128,7 @@ void initGPIO(void){
     PM5CTL0 &= ~LOCKLPM5;
 
 }
-
+//INIT ADC
 void initADC(void){
 
     // Configure ADC
@@ -96,8 +140,20 @@ void initADC(void){
 
 }
 
+//INIT UART
+void initUART(void)
+{
+    P2SEL0 &= ~(BIT5 | BIT6);
+    P2SEL1 |=  (BIT5 | BIT6);
+    UCA0CTLW0 = UCSSEL__SMCLK;
+    UCA0BRW   = 104;
+    UCA0MCTLW = UCOS16 | UCBRS1;
+    UCA0CTLW0 &= ~UCSWRST;
+}
 
-// ADC interrupt service routine
+//--------------------------------------------------------------------------------
+//ADC INTERRUPT SERVICE ROUTINE
+//--------------------------------------------------------------------------------
 #if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
 #pragma vector=ADC_VECTOR
 __interrupt void ADC_ISR(void)
@@ -134,4 +190,71 @@ void __attribute__ ((interrupt(ADC_VECTOR))) ADC_ISR (void)
     }  
 }
 
+//--------------------------------------------------------------------------------
+//CLOCK FAULT INTERRUPT ROUTINE
+//--------------------------------------------------------------------------------
+#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
+#pragma vector=UNMI_VECTOR
+__interrupt void UNMI_ISR(void)
+#elif defined(__GNUC__)
+void __attribute__((interrupt(UNMI_VECTOR))) UNMI_ISR(void)
+#else
+#error Compiler not supported!
+#endif
+{
+    do {
+        CSCTL7 &= ~XT1OFFG;
+        SFRIFG1 &= ~OFIFG;
+        P1OUT |= BIT0;
+        __delay_cycles(25000);
+    } while (SFRIFG1 & OFIFG);
+    P1OUT &= ~BIT0;
+}
 
+//------------------------------------------------------------------------------
+// DCOFTRIM ADJUSTMENT
+//------------------------------------------------------------------------------
+void Software_Trim(void)
+{
+    unsigned int oldDcoTap = 0xffff;
+    unsigned int newDcoTap;
+    unsigned int newDcoDelta;
+    unsigned int bestDcoDelta = 0xffff;
+    unsigned int csCtl0Copy, csCtl1Copy;
+    unsigned int csCtl0Read, csCtl1Read;
+    unsigned int dcoFreqTrim;
+    unsigned char endLoop = 0;
+
+    do {
+        CSCTL0 = 0x100;                     // DCOTAP=256
+        do { CSCTL7 &= ~DCOFFG; } while (CSCTL7 & DCOFFG);
+        __delay_cycles(3000 * MCLK_FREQ_MHZ);
+        while ((CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) && !(CSCTL7 & DCOFFG));
+
+        csCtl0Read = CSCTL0;
+        csCtl1Read = CSCTL1;
+        newDcoTap   = csCtl0Read & 0x01ff;
+        dcoFreqTrim = (csCtl1Read & 0x0070) >> 4;
+
+        if (newDcoTap < 256) {
+            newDcoDelta = 256 - newDcoTap;
+            if (oldDcoTap != 0xffff && oldDcoTap >= 256) endLoop = 1;
+            else { dcoFreqTrim--; CSCTL1 = (csCtl1Read & ~0x0070) | (dcoFreqTrim << 4); }
+        } else {
+            newDcoDelta = newDcoTap - 256;
+            if (oldDcoTap < 256) endLoop = 1;
+            else { dcoFreqTrim++; CSCTL1 = (csCtl1Read & ~0x0070) | (dcoFreqTrim << 4); }
+        }
+
+        if (newDcoDelta < bestDcoDelta) {
+            csCtl0Copy    = csCtl0Read;
+            csCtl1Copy    = csCtl1Read;
+            bestDcoDelta  = newDcoDelta;
+        }
+        oldDcoTap = newDcoTap;
+    } while (!endLoop);
+
+    CSCTL0 = csCtl0Copy;
+    CSCTL1 = csCtl1Copy;
+    while (CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1));
+}
