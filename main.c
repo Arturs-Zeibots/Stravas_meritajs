@@ -44,8 +44,10 @@ void initUART(void);
 //MAIN
 //--------------------------------------------------------------------------------
 int main(void){
-    init();
+
+    init();  //Calls init function that calls GPIO, ADC, EXTCLK and UART init functions
     __enable_interrupt();
+
     while(1){
 
         // reset window
@@ -53,20 +55,21 @@ int main(void){
         sampleCount  = 0;
 
         // collect WINDOW_SIZE samples
+        /* Window based sampling
         while(sampleCount < WINDOW_SIZE){
             ADCCTL0 |= ADCENC | ADCSC;             // start conversion
             __bis_SR_register(LPM0_bits);    // sleep until ISR wakes us
-        }
+        }*/
+        //maxInWindow is peak value printed to UART -> RS-485
+        //printf("Peak=%d\r\n", maxInWindow);
+        //regular sampling
+        ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+         __bis_SR_register(LPM0_bits);
+        
+        //printf("Peak=%d\r\n", adcResult);
+        //rtdxChannelWrite("Peak=%d\r\n", adcResult);
 
-        //maxInWindow is max value attained in the window
-        if(maxInWindow > 10){
-            P1OUT &= ~BIT5;
-               // turn on RELAY control as an example
-        } else {
-            P1OUT |= BIT5;
-        }
-
-        __delay_cycles(500000);
+        __delay_cycles(500);
     }
 }
 
@@ -78,15 +81,24 @@ void init(void) {
 
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
 
+    // Disable GPIO High-Z protection
+    PM5CTL0 &= ~LOCKLPM5;
+
+    //initEXTCLK();
     initGPIO();
     initADC();
+    initUART();
+
     
 }
-//INIT EXTERNAL CLOCK
+//INIT EXTERNAL CLOCK NESTRĀDĀ
 void initEXTCLK(void){
 
+    CSCTL0_H = 0xA5;
+
     // XT1 crystal on P2.0/P2.1
-    P2SEL0 |= BIT0 | BIT1;
+    P2SEL0 &= ~(BIT0|BIT1);
+    P2SEL1 |=  (BIT0|BIT1);
     // Clear fault flags
     do {
         CSCTL7 &= ~(XT1OFFG | DCOFFG);
@@ -107,6 +119,8 @@ void initEXTCLK(void){
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
 
+    CSCTL0_H = 0;
+
     // Enable oscillator fault interrupt
     SFRIE1 |= OFIE;
 }
@@ -124,8 +138,7 @@ void initGPIO(void){
     // Configure GPIO to ADC A0(VEREF+) A2(VEREF-) A3(INPUT) pins
     SYSCFG2 |= ADCPCTL0 | ADCPCTL2 | ADCPCTL3;
                                    
-    // Disable GPIO High-Z protection
-    PM5CTL0 &= ~LOCKLPM5;
+    
 
 }
 //INIT ADC
@@ -145,10 +158,10 @@ void initUART(void)
 {
     P2SEL0 &= ~(BIT5 | BIT6);
     P2SEL1 |=  (BIT5 | BIT6);
-    UCA0CTLW0 = UCSSEL__SMCLK;
-    UCA0BRW   = 104;
-    UCA0MCTLW = UCOS16 | UCBRS1;
-    UCA0CTLW0 &= ~UCSWRST;
+    UCA1CTLW0 = UCSSEL__SMCLK;
+    UCA1BRW   = 104;
+    UCA1MCTLW = UCOS16 | UCBRS1;
+    UCA1CTLW0 &= ~UCSWRST;
 }
 
 //--------------------------------------------------------------------------------
@@ -179,9 +192,10 @@ void __attribute__ ((interrupt(ADC_VECTOR))) ADC_ISR (void)
             break;                              
         case ADCIV_ADCIFG:
             adcResult = ADCMEM0;
-        if (adcResult > maxInWindow) {
+        /*if (adcResult > maxInWindow) {
             maxInWindow = abs(adcResult-IDLE_POINT);
-        }
+        }*/
+        maxInWindow = adcResult;
         sampleCount++;
         __bic_SR_register_on_exit(LPM0_bits);  // wake main()            // Clear CPUOFF bit from LPM0
             break;             
