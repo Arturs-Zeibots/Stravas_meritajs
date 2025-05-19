@@ -25,13 +25,45 @@ UART TX -> P2.6
 #define WINDOW_SIZE 1000
 #define IDLE_POINT 515 //using VREF/2=1.5V midpoint the ADC value =
 
+#define TX_BUF_SIZE  64
+
+static volatile uint8_t  txBuf[TX_BUF_SIZE];
+static volatile uint8_t  txHead = 0;    // next free slot
+static volatile uint8_t  txTail = 0;    // next byte to send
+static volatile uint8_t  txCount = 0;   // number of bytes in buffer
+
+
+
 volatile int  adcResult;
 volatile int  maxInWindow;
 volatile int  sampleCount;
 
-//STUFF
-void Software_Trim(void);
-int fputc(int c, FILE *stream);
+// ——————————————————————————————
+// fputc() override to enqueue on A1
+// ——————————————————————————————
+/*int fputc(int ch, FILE *f) {
+    while(txCount == TX_BUF_SIZE);
+
+    _disable_interrupt();
+
+    if (txCount == 0) {
+        UCA1TXBUF = (uint8_t)ch;
+        // enable the interrupt so that when this byte finishes
+        // shifting out, the ISR will take over on the next one
+        UCA1IE |= UCTXIE;
+    } else {
+        // just enqueue it
+        txBuf[txHead++] = (uint8_t)ch;
+        if (txHead == TX_BUF_SIZE) txHead = 0;
+        txCount++;
+    }
+    __enable_interrupt();
+
+    return ch;
+
+}*/
+
+
 
 //INITIAL FUNCTIONS DEFINITIONS
 void init(void);
@@ -46,30 +78,27 @@ void initUART(void);
 int main(void){
 
     init();  //Calls init function that calls GPIO, ADC, EXTCLK and UART init functions
-    __enable_interrupt();
+    //__enable_interrupt();
 
     while(1){
 
         // reset window
-        maxInWindow  = 0;
-        sampleCount  = 0;
+        //maxInWindow  = 0;
+        //sampleCount  = 0;
 
-        // collect WINDOW_SIZE samples
-        /* Window based sampling
-        while(sampleCount < WINDOW_SIZE){
-            ADCCTL0 |= ADCENC | ADCSC;             // start conversion
-            __bis_SR_register(LPM0_bits);    // sleep until ISR wakes us
-        }*/
-        //maxInWindow is peak value printed to UART -> RS-485
-        //printf("Peak=%d\r\n", maxInWindow);
-        //regular sampling
-        ADCCTL0 |= ADCENC | ADCSC;             // start conversion
-         __bis_SR_register(LPM0_bits);
         
-        //printf("Peak=%d\r\n", adcResult);
-        //rtdxChannelWrite("Peak=%d\r\n", adcResult);
+        //ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+        //__bis_SR_register(LPM0_bits);
+       // __no_operation();
+       // printf("abccd\n");
+        //__delay_cycles(100);    // ~1s @ 1 MHz
+       // __no_operation();
 
-        __delay_cycles(500);
+
+        //__delay_cycles(500);
+
+        UCA1TXBUF = 'A';
+        __delay_cycles(10000);
     }
 }
 
@@ -99,11 +128,14 @@ void initEXTCLK(void){
     // XT1 crystal on P2.0/P2.1
     P2SEL0 &= ~(BIT0|BIT1);
     P2SEL1 |=  (BIT0|BIT1);
-    // Clear fault flags
-    do {
-        CSCTL7 &= ~(XT1OFFG | DCOFFG);
-        SFRIFG1 &= ~OFIFG;
-    } while (SFRIFG1 & OFIFG);
+
+    // Clear fault flags 
+    CSCTL7 &= ~(XT1OFFG | DCOFFG);
+    SFRIFG1 &= ~OFIFG;
+    _delay_cycles(200);
+    //Clear fault flags and disable fault flags
+    SFRIE1 &= ~OFIE;
+    SFRIFG1 &= ~OFIFG;
 
     // Disable FLL
     __bis_SR_register(SCG0);
@@ -114,15 +146,12 @@ void initEXTCLK(void){
     // Enable FLL
     __bic_SR_register(SCG0);
 
-    Software_Trim();                        // Trim DCO
-
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
 
     CSCTL0_H = 0;
 
-    // Enable oscillator fault interrupt
-    SFRIE1 |= OFIE;
+    
 }
 
 
@@ -156,119 +185,57 @@ void initADC(void){
 //INIT UART
 void initUART(void)
 {
-    P2SEL0 &= ~(BIT5 | BIT6);
-    P2SEL1 |=  (BIT5 | BIT6);
-    UCA1CTLW0 = UCSSEL__SMCLK;
-    UCA1BRW   = 104;
-    UCA1MCTLW = UCOS16 | UCBRS1;
+    //– Route P2.5→UCA1RXD, P2.6→UCA1TXD
+    P2SEL1 &= ~(BIT5 | BIT6);
+    P2SEL0 |=  (BIT5 | BIT6);
+
+    //– Put eUSCI in reset, select SMCLK
+    UCA1CTLW0 |= UCSWRST;            // <<-- hold in reset
+    UCA1CTLW0 |= UCSSEL__SMCLK;    // clock = SMCLK
+
+    //– Baud-rate 9600 @ 1 MHz
+    UCA1BRW    = 104;               // integer divider
+    UCA1MCTLW  = UCOS16 | UCBRS1;  // oversampling + modulation
+
+    //– Take eUSCI out of reset
     UCA1CTLW0 &= ~UCSWRST;
+
+    // Ensure TX interrupt is _off_ until first byte is written
+    //UCA1IE &= ~UCTXIE;
 }
 
 //--------------------------------------------------------------------------------
 //ADC INTERRUPT SERVICE ROUTINE
 //--------------------------------------------------------------------------------
-#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
-#pragma vector=ADC_VECTOR
-__interrupt void ADC_ISR(void)
-#elif defined(__GNUC__)
-void __attribute__ ((interrupt(ADC_VECTOR))) ADC_ISR (void)
-#else
-#error Compiler not supported!
-#endif
+void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void)
 {
-    switch(__even_in_range(ADCIV,ADCIV_ADCIFG))
-    {
-        case ADCIV_NONE:
-            break;                              
-        case ADCIV_ADCOVIFG: 
-            break;                              
-        case ADCIV_ADCTOVIFG:
-            break;                              
-        case ADCIV_ADCHIIFG:
-            break;                         
-        case ADCIV_ADCLOIFG:
-            break;                             
-        case ADCIV_ADCINIFG:
-            break;                              
-        case ADCIV_ADCIFG:
-            adcResult = ADCMEM0;
-        /*if (adcResult > maxInWindow) {
-            maxInWindow = abs(adcResult-IDLE_POINT);
-        }*/
-        maxInWindow = adcResult;
-        sampleCount++;
-        __bic_SR_register_on_exit(LPM0_bits);  // wake main()            // Clear CPUOFF bit from LPM0
-            break;             
-        default:
-            break; 
-    }  
+  if (ADCIV == ADCIV_ADCIFG) {
+    adcResult   = ADCMEM0;
+    maxInWindow = adcResult;
+    sampleCount++;
+    __bic_SR_register_on_exit(LPM0_bits);
+  }
 }
 
-//--------------------------------------------------------------------------------
-//CLOCK FAULT INTERRUPT ROUTINE
-//--------------------------------------------------------------------------------
-#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
-#pragma vector=UNMI_VECTOR
-__interrupt void UNMI_ISR(void)
-#elif defined(__GNUC__)
-void __attribute__((interrupt(UNMI_VECTOR))) UNMI_ISR(void)
-#else
-#error Compiler not supported!
-#endif
+// ——————————————————————————————
+// eUSCI_A1 TX ISR
+// ——————————————————————————————
+/*void __attribute__((interrupt(USCI_A1_VECTOR))) USCI_A1_ISR(void)
 {
-    do {
-        CSCTL7 &= ~XT1OFFG;
-        SFRIFG1 &= ~OFIFG;
-        P1OUT |= BIT0;
-        __delay_cycles(25000);
-    } while (SFRIFG1 & OFIFG);
-    P1OUT &= ~BIT0;
-}
+    if (UCA1IFG & UCTXIFG) {
+        if (txCount > 0) {
+            UCA1TXBUF = txBuf[txTail++];
+            P1OUT ^= BIT5;
+            if (txTail == TX_BUF_SIZE) txTail = 0;
 
-//------------------------------------------------------------------------------
-// DCOFTRIM ADJUSTMENT
-//------------------------------------------------------------------------------
-void Software_Trim(void)
-{
-    unsigned int oldDcoTap = 0xffff;
-    unsigned int newDcoTap;
-    unsigned int newDcoDelta;
-    unsigned int bestDcoDelta = 0xffff;
-    unsigned int csCtl0Copy, csCtl1Copy;
-    unsigned int csCtl0Read, csCtl1Read;
-    unsigned int dcoFreqTrim;
-    unsigned char endLoop = 0;
-
-    do {
-        CSCTL0 = 0x100;                     // DCOTAP=256
-        do { CSCTL7 &= ~DCOFFG; } while (CSCTL7 & DCOFFG);
-        __delay_cycles(3000 * MCLK_FREQ_MHZ);
-        while ((CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1)) && !(CSCTL7 & DCOFFG));
-
-        csCtl0Read = CSCTL0;
-        csCtl1Read = CSCTL1;
-        newDcoTap   = csCtl0Read & 0x01ff;
-        dcoFreqTrim = (csCtl1Read & 0x0070) >> 4;
-
-        if (newDcoTap < 256) {
-            newDcoDelta = 256 - newDcoTap;
-            if (oldDcoTap != 0xffff && oldDcoTap >= 256) endLoop = 1;
-            else { dcoFreqTrim--; CSCTL1 = (csCtl1Read & ~0x0070) | (dcoFreqTrim << 4); }
-        } else {
-            newDcoDelta = newDcoTap - 256;
-            if (oldDcoTap < 256) endLoop = 1;
-            else { dcoFreqTrim++; CSCTL1 = (csCtl1Read & ~0x0070) | (dcoFreqTrim << 4); }
+            txCount--;
         }
-
-        if (newDcoDelta < bestDcoDelta) {
-            csCtl0Copy    = csCtl0Read;
-            csCtl1Copy    = csCtl1Read;
-            bestDcoDelta  = newDcoDelta;
+        if (txCount == 0) {
+            // nothing left → disable interrupt
+            UCA1IE &= ~UCTXIE;
         }
-        oldDcoTap = newDcoTap;
-    } while (!endLoop);
-
-    CSCTL0 = csCtl0Copy;
-    CSCTL1 = csCtl1Copy;
-    while (CSCTL7 & (FLLUNLOCK0 | FLLUNLOCK1));
+        __bic_SR_register_on_exit(LPM0_bits);
+    }
 }
+*/
+
