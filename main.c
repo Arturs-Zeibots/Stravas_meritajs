@@ -78,27 +78,25 @@ void initUART(void);
 int main(void){
 
     init();  //Calls init function that calls GPIO, ADC, EXTCLK and UART init functions
-    //__enable_interrupt();
+    __enable_interrupt();
 
     while(1){
 
         // reset window
-        //maxInWindow  = 0;
-        //sampleCount  = 0;
+        maxInWindow  = 0;
+        sampleCount  = 0;
 
         
-        //ADCCTL0 |= ADCENC | ADCSC;             // start conversion
-        //__bis_SR_register(LPM0_bits);
-       // __no_operation();
-       // printf("abccd\n");
+        ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+        __bis_SR_register(LPM0_bits);
+        __no_operation();
+       // printf("abccd\n"); //TEST KODS
         //__delay_cycles(100);    // ~1s @ 1 MHz
-       // __no_operation();
 
-
-        //__delay_cycles(500);
-
-        UCA1TXBUF = 'A';
-        __delay_cycles(10000);
+        __no_operation();
+        UCA1TXBUF = 'H'; // TEST KODS
+        __delay_cycles(100000); //TEST KODS
+        __no_operation();
     }
 }
 
@@ -110,13 +108,14 @@ void init(void) {
 
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
 
-    // Disable GPIO High-Z protection
-    PM5CTL0 &= ~LOCKLPM5;
 
-    //initEXTCLK();
+
+    initEXTCLK();
     initGPIO();
     initADC();
     initUART();
+    PM5CTL0 &= ~LOCKLPM5;
+
 
     
 }
@@ -200,6 +199,8 @@ void initUART(void)
     //– Take eUSCI out of reset
     UCA1CTLW0 &= ~UCSWRST;
 
+    PM5CTL0 &= ~LOCKLPM5;
+
     // Ensure TX interrupt is _off_ until first byte is written
     //UCA1IE &= ~UCTXIE;
 }
@@ -216,26 +217,4 @@ void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void)
     __bic_SR_register_on_exit(LPM0_bits);
   }
 }
-
-// ——————————————————————————————
-// eUSCI_A1 TX ISR
-// ——————————————————————————————
-/*void __attribute__((interrupt(USCI_A1_VECTOR))) USCI_A1_ISR(void)
-{
-    if (UCA1IFG & UCTXIFG) {
-        if (txCount > 0) {
-            UCA1TXBUF = txBuf[txTail++];
-            P1OUT ^= BIT5;
-            if (txTail == TX_BUF_SIZE) txTail = 0;
-
-            txCount--;
-        }
-        if (txCount == 0) {
-            // nothing left → disable interrupt
-            UCA1IE &= ~UCTXIE;
-        }
-        __bic_SR_register_on_exit(LPM0_bits);
-    }
-}
-*/
 
