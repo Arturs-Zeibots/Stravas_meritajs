@@ -46,25 +46,9 @@ volatile int  sampleCount;
 // fputc() override to enqueue on A1
 // ——————————————————————————————
 int fputc(int ch, FILE *f) {
-    while(txCount == TX_BUF_SIZE);
-
-    _disable_interrupt();
-
-    if (txCount == 0) {
-        UCA1TXBUF = (uint8_t)ch;
-        // enable the interrupt so that when this byte finishes
-        // shifting out, the ISR will take over on the next one
-        UCA1IE |= UCTXIE;
-    } else {
-        // just enqueue it
-        txBuf[txHead++] = (uint8_t)ch;
-        if (txHead == TX_BUF_SIZE) txHead = 0;
-        txCount++;
-    }
-    __enable_interrupt();
-
+    while (!(UCA1IFG & UCTXIFG));   // wait for TX ready
+    UCA1TXBUF = (uint8_t)ch;
     return ch;
-
 }
 
 
@@ -87,17 +71,20 @@ int main(void){
     while(1){
 
         //reset window
-        maxInWindow  = 0;
-        sampleCount  = 0;
+       // maxInWindow  = 0;
+       // sampleCount  = 0;
 
         
-        ADCCTL0 |= ADCENC | ADCSC;             // start conversion
-        __bis_SR_register(LPM0_bits);
-        __no_operation();
-
-        printf("Peak=%d\r\n", adcResult);
+        //ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+       // __bis_SR_register(LPM0_bits);
         //__no_operation();
-        __delay_cycles(10000);    // ~1s @ 1 MHz
+
+       // printf("%d\r\n",adcResult);
+        //__no_operation();
+        //__delay_cycles(10000);    // ~1s @ 1 MHz
+
+        fputc('A', stdout);
+    __delay_cycles(100000);   // ~0.1 s @ 1 MHz
         
     }
 }
@@ -116,8 +103,15 @@ void init(void) {
 
     initGPIO();
     initADC();
-    initUART();
     initEXTCLK();
+    /*CSCTL0_H = 0xA5;            
+    CSCTL1   = DCORSEL_0;          // DCO = ~1 MHz
+    CSCTL2   = FLLD_0 + 31;        // DCOCLKDIV = DCO/32 ≃1 MHz
+    CSCTL3   = SELREF__REFOCLK;    
+    CSCTL4   = SELMS__DCOCLKDIV | SELA__REFOCLK;
+    CSCTL0_H = 0;*/
+    initUART();
+    
     
 
     
@@ -125,16 +119,17 @@ void init(void) {
 //INIT EXTERNAL CLOCK NESTRĀDĀ
 void initEXTCLK(void){
 
-    CSCTL0_H = 0xA5;
+    //CSCTL0_H = 0xA5;
 
     // XT1 crystal on P2.0/P2.1
-    P2SEL0 &= ~(BIT0|BIT1);
-    P2SEL1 |=  (BIT0|BIT1);
+    P2SEL0 |= (BIT0|BIT1);
+    P2SEL1 &=  ~(BIT0|BIT1);
 
-    CSCTL6 &= ~XT1OFFG;           // clear XT1 fault flag
+    CSCTL7 &= ~XT1OFFG;           // clear XT1 fault flag
     CSCTL7 &= ~(XT1OFFG|DCOFFG);  // clear both fault flags
     // choose drive strength: lowest first, increase if it doesn’t start
-    CSCTL6 &= ~(XT1BYPASS | XTS | XT1DRIVE_3);
+    CSCTL6 &= ~(XT1BYPASS | XTS);
+    CSCTL6 |= XT1DRIVE_3;
     // Clear fault flags
     do {
     CSCTL7 &= ~(XT1OFFG|DCOFFG);
@@ -156,14 +151,10 @@ void initEXTCLK(void){
     SFRIE1 &= ~OFIE;
     SFRIFG1 &= ~OFIFG;
 
-    // Disable FLL
-    __bis_SR_register(SCG0);
     CSCTL3 = SELREF__XT1CLK;                // XT1 as FLL reference
     CSCTL1 = DCOFTRIMEN | DCOFTRIM0 | DCOFTRIM1 | DCORSEL_0;
-    CSCTL2 = FLLD_0 + 32;                   // DCODIV = 1MHz
+    CSCTL2 = FLLD_0 + 31;                   // DCODIV = 1MHz
     __delay_cycles(3);
-    // Enable FLL
-    __bic_SR_register(SCG0);
 
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
@@ -216,6 +207,8 @@ void initUART(void)
     UCA1BRW    = 104;               // integer divider
     UCA1MCTLW  = UCOS16 | UCBRS1;  // oversampling + modulation
 
+    UCA1IE &= ~UCTXIE;
+
     //– Take eUSCI out of reset
     UCA1CTLW0 &= ~UCSWRST;
 
@@ -234,4 +227,19 @@ void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void)
     sampleCount++;
     __bic_SR_register_on_exit(LPM0_bits);
   }
+}
+
+
+
+#pragma vector=USCI_A1_VECTOR
+__interrupt void USCI_A1_ISR(void) {
+    if (UCA1IFG & UCTXIFG) {
+        if (txCount) {
+            UCA1TXBUF = txBuf[txTail++];
+            if (txTail == TX_BUF_SIZE) txTail = 0;
+            --txCount;
+        } else {
+            UCA1IE &= ~UCTXIE;    // disable TX interrupt
+        }
+    }
 }
