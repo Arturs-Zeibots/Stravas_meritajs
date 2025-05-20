@@ -104,12 +104,6 @@ void init(void) {
     initGPIO();
     initADC();
     initEXTCLK();
-    /*CSCTL0_H = 0xA5;            
-    CSCTL1   = DCORSEL_0;          // DCO = ~1 MHz
-    CSCTL2   = FLLD_0 + 31;        // DCOCLKDIV = DCO/32 ≃1 MHz
-    CSCTL3   = SELREF__REFOCLK;    
-    CSCTL4   = SELMS__DCOCLKDIV | SELA__REFOCLK;
-    CSCTL0_H = 0;*/
     initUART();
     
     
@@ -135,13 +129,8 @@ void initEXTCLK(void){
     CSCTL7 &= ~(XT1OFFG|DCOFFG);
     SFRIFG1 &= ~OFIFG;
     __delay_cycles(1000);
-    } while ((SFRIFG1 & OFIFG) && --timeout);
+    } while ((SFRIFG1 & OFIFG));
 
-    if (timeout == 0) {
-        // XT1 failed to start: fall back to DCO or signal error
-        CSCTL4 = SELMS__DCOCLKDIV | SELA__REFOCLK;  
-        // maybe blink an LED to indicate error
-    }
 
     // Clear fault flags 
     CSCTL7 &= ~(XT1OFFG | DCOFFG);
@@ -243,3 +232,4 @@ __interrupt void USCI_A1_ISR(void) {
         }
     }
 }
+
