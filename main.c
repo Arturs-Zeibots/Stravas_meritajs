@@ -27,6 +27,10 @@ UART TX -> P2.6
 
 #define TX_BUF_SIZE  64
 
+#define XT1_TIMEOUT  50000u
+uint16_t timeout = XT1_TIMEOUT;
+
+
 static volatile uint8_t  txBuf[TX_BUF_SIZE];
 static volatile uint8_t  txHead = 0;    // next free slot
 static volatile uint8_t  txTail = 0;    // next byte to send
@@ -126,12 +130,23 @@ void initEXTCLK(void){
     // XT1 crystal on P2.0/P2.1
     P2SEL0 &= ~(BIT0|BIT1);
     P2SEL1 |=  (BIT0|BIT1);
+
+    CSCTL6 &= ~XT1OFFG;           // clear XT1 fault flag
+    CSCTL7 &= ~(XT1OFFG|DCOFFG);  // clear both fault flags
+    // choose drive strength: lowest first, increase if it doesn’t start
+    CSCTL6 &= ~(XT1BYPASS | XTS | XT1DRIVE_3);
     // Clear fault flags
     do {
-        CSCTL7 &= ~(XT1OFFG | DCOFFG);
-        SFRIFG1 &= ~OFIFG;
-        _delay_cycles(100);
-    } while (SFRIFG1 & OFIFG);
+    CSCTL7 &= ~(XT1OFFG|DCOFFG);
+    SFRIFG1 &= ~OFIFG;
+    __delay_cycles(1000);
+    } while ((SFRIFG1 & OFIFG) && --timeout);
+
+    if (timeout == 0) {
+        // XT1 failed to start: fall back to DCO or signal error
+        CSCTL4 = SELMS__DCOCLKDIV | SELA__REFOCLK;  
+        // maybe blink an LED to indicate error
+    }
 
     // Clear fault flags 
     CSCTL7 &= ~(XT1OFFG | DCOFFG);
