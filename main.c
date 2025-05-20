@@ -41,7 +41,7 @@ volatile int  sampleCount;
 // ——————————————————————————————
 // fputc() override to enqueue on A1
 // ——————————————————————————————
-/*int fputc(int ch, FILE *f) {
+int fputc(int ch, FILE *f) {
     while(txCount == TX_BUF_SIZE);
 
     _disable_interrupt();
@@ -61,7 +61,7 @@ volatile int  sampleCount;
 
     return ch;
 
-}*/
+}
 
 
 
@@ -82,7 +82,7 @@ int main(void){
 
     while(1){
 
-        // reset window
+        //reset window
         maxInWindow  = 0;
         sampleCount  = 0;
 
@@ -90,13 +90,11 @@ int main(void){
         ADCCTL0 |= ADCENC | ADCSC;             // start conversion
         __bis_SR_register(LPM0_bits);
         __no_operation();
-       // printf("abccd\n"); //TEST KODS
-        //__delay_cycles(100);    // ~1s @ 1 MHz
 
-        __no_operation();
-        UCA1TXBUF = 'H'; // TEST KODS
-        __delay_cycles(100000); //TEST KODS
-        __no_operation();
+        printf("Peak=%d\r\n", adcResult);
+        //__no_operation();
+        __delay_cycles(10000);    // ~1s @ 1 MHz
+        
     }
 }
 
@@ -109,13 +107,14 @@ void init(void) {
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
 
 
+    PM5CTL0 &= ~LOCKLPM5;
 
-    initEXTCLK();
+
     initGPIO();
     initADC();
     initUART();
-    PM5CTL0 &= ~LOCKLPM5;
-
+    initEXTCLK();
+    
 
     
 }
@@ -127,6 +126,12 @@ void initEXTCLK(void){
     // XT1 crystal on P2.0/P2.1
     P2SEL0 &= ~(BIT0|BIT1);
     P2SEL1 |=  (BIT0|BIT1);
+    // Clear fault flags
+    do {
+        CSCTL7 &= ~(XT1OFFG | DCOFFG);
+        SFRIFG1 &= ~OFIFG;
+        _delay_cycles(100);
+    } while (SFRIFG1 & OFIFG);
 
     // Clear fault flags 
     CSCTL7 &= ~(XT1OFFG | DCOFFG);
@@ -140,7 +145,7 @@ void initEXTCLK(void){
     __bis_SR_register(SCG0);
     CSCTL3 = SELREF__XT1CLK;                // XT1 as FLL reference
     CSCTL1 = DCOFTRIMEN | DCOFTRIM0 | DCOFTRIM1 | DCORSEL_0;
-    CSCTL2 = FLLD_0 + 30;                   // DCODIV = 1MHz
+    CSCTL2 = FLLD_0 + 32;                   // DCODIV = 1MHz
     __delay_cycles(3);
     // Enable FLL
     __bic_SR_register(SCG0);
@@ -199,8 +204,6 @@ void initUART(void)
     //– Take eUSCI out of reset
     UCA1CTLW0 &= ~UCSWRST;
 
-    PM5CTL0 &= ~LOCKLPM5;
-
     // Ensure TX interrupt is _off_ until first byte is written
     //UCA1IE &= ~UCTXIE;
 }
@@ -217,4 +220,3 @@ void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void)
     __bic_SR_register_on_exit(LPM0_bits);
   }
 }
-
