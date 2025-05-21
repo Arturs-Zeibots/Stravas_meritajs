@@ -19,28 +19,24 @@ UART TX -> P2.6
 #include <msp430.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 //DEFINITIONS
-#define MCLK_FREQ_MHZ 1
 #define WINDOW_SIZE 1000
-#define IDLE_POINT 515 //using VREF/2=1.5V midpoint the ADC value =
-
+#define IDLE_POINT 0 //using VREF/2=1.5V midpoint the ADC value = 
 #define TX_BUF_SIZE  64
-
-#define XT1_TIMEOUT  50000u
-uint16_t timeout = XT1_TIMEOUT;
-
 
 static volatile uint8_t  txBuf[TX_BUF_SIZE];
 static volatile uint8_t  txHead = 0;    // next free slot
 static volatile uint8_t  txTail = 0;    // next byte to send
 static volatile uint8_t  txCount = 0;   // number of bytes in buffer
 
-
-
 volatile int  adcResult;
 volatile int  maxInWindow;
 volatile int  sampleCount;
+volatile int printValue;
+
+volatile bool requestADC = false;
 
 //INITIAL FUNCTIONS DEFINITIONS
 void init(void);
@@ -49,30 +45,19 @@ void initGPIO(void);
 void initADC(void);
 void initUART(void);
 
-void readADC(void);
-
-int fputc(int ch, FILE *f) {
-    while (!(UCA1IFG & UCTXIFG));   // wait for TX ready
-    UCA1TXBUF = (uint8_t)ch;
-    while(txCount == TX_BUF_SIZE);
-
-    _disable_interrupt();
-
-    if (txCount == 0) {
-        UCA1TXBUF = (uint8_t)ch;
-        // enable the interrupt so that when this byte finishes
-        // shifting out, the ISR will take over on the next one
-        UCA1IE |= UCTXIE;
-    } else {
-        // just enqueue it
-        txBuf[txHead++] = (uint8_t)ch;
-        if (txHead == TX_BUF_SIZE) txHead = 0;
-        txCount++;
+int readADC(void){
+    int maxDiff = 0;
+    int i;
+    for (i = 0; i < WINDOW_SIZE; i++) {
+        ADCCTL0 |= ADCENC | ADCSC;              // enable & start
+        while (!(ADCCTL0 & ADCIFG));            // wait end
+        ADCCTL0 &= ~ADCIFG;
+        int v = ADCMEM0;
+        int d = (v > IDLE_POINT) ? (v - IDLE_POINT)
+                                 : (IDLE_POINT - v);
+        if (d > maxDiff) maxDiff = d;
     }
-    __enable_interrupt();
-
-    return ch;
-
+    return maxDiff;
 }
 
 //--------------------------------------------------------------------------------
@@ -82,14 +67,24 @@ int main(void){
 
     init();  //Calls init function that calls GPIO, ADC, EXTCLK and UART init functions
     __enable_interrupt();
-
-    ADCCTL0 |= ADCENC; 
-    UCA1RXBUF = 0x0075;
-    UCA1IFG |= UCRXIFG;
     
+
     while(1){
-        __no_operation();
-        
+	if (requestADC) {
+            requestADC = false;
+
+            // 1) do the ADC (polled, so no interrupts needed)
+            int result = readADC();
+
+            // 2) format into txBuf
+            int len = sprintf((char*)txBuf, "I=%d\r\n", result);
+            txHead  = 0;
+            txTail  = 0;
+            txCount = len;
+
+            // 3) kick off TX interrupts
+            UCA1IE |= UCTXIE;
+        }
     }
 }
 
@@ -110,7 +105,8 @@ void init(void) {
     initEXTCLK();
     initUART();
 }
-//INIT EXTERNAL CLOCK NESTRĀDĀ
+
+//INIT EXTERNAL CLOCK
 void initEXTCLK(void){
 
     //CSCTL0_H = 0xA5;
@@ -148,11 +144,8 @@ void initEXTCLK(void){
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
 
-    //CSCTL0_H = 0;
-
     
 }
-
 
 //INIT GPIO PINS
 void initGPIO(void){
@@ -169,6 +162,7 @@ void initGPIO(void){
     
 
 }
+
 //INIT ADC
 void initADC(void){
 
@@ -201,26 +195,12 @@ void initUART(void){
     UCA1CTLW0 &= ~UCSWRST;
 
 
-      UCA1IE   = UCRXIE;
+     UCA1IE   = UCRXIE;
     //UCA1IE = UCRXIE;
     //UCA1IE = UCTXIE;
 
 }
 
-void readADC(){
-    maxInWindow  = 0;
-    sampleCount  = 0;
-
-    __enable_interrupt();
-
-    while (sampleCount < WINDOW_SIZE) {
-        ADCCTL0 |= ADCSC;    // start
-        // no waiting here; ADC_ISR will bump sampleCount
-    }
-
-    // And then disable nested if you like:
-    __disable_interrupt();
-}
 
 //--------------------------------------------------------------------------------
 //ADC INTERRUPT SERVICE ROUTINE
@@ -235,40 +215,28 @@ void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void){
         sampleCount++;
   }
 }
+
 //--------------------------------------------------------------------------------
 //UART INTERRUPT SERVICE ROUTINE
 //-------------------------------------------------------------------------------
-#pragma vector=USCI_A1_VECTOR
+/*#pragma vector=USCI_A1_VECTOR
 __interrupt void USCI_A1_ISR(void)
 {
     
 
     if(UCA1IFG & UCRXIFG){
-        //char rx = UCA1RXBUF;  
-        //if (rx == 'u') {
-            // ——— BEGIN ring-buffer fill ———
-            readADC();
-            volatile int result = maxInWindow;//readADC();
+        char rx = UCA1RXBUF;  
+        if (rx == 'u') {
+            //fill buffer
+            volatile int result = readADC();
             int len = sprintf((char*)txBuf, "I=%d\r\n", result);
 
-            //__disable_interrupt();
-            // reset the TX buffer pointers/count
+            //reset
             txHead  = 0;
             txTail  = 0;
             txCount = len;
-            // copy the message into txBuf[]
-           /* volatile uint8_t i;
-            for (i = 0; i < len; i++) {
-                txBuf[txHead++] = msg[i];
-                if (txHead == TX_BUF_SIZE) txHead = 0;
-                txCount++;
-            }*/
-            // kick off the first byte
             UCA1IFG &= ~UCRXIFG;
-            UCA1IE |= UCTXIE;  // enable TX interrupt
-            //__enable_interrupt();
-            // ——— END “Option 2” ———
-        //
+            UCA1IE |= UCTXIE;
     }
 
     if (UCA1IFG & UCTXIFG) {
@@ -284,3 +252,34 @@ __interrupt void USCI_A1_ISR(void)
     }
 }
 
+}*/
+
+#pragma vector=USCI_A1_VECTOR
+__interrupt void USCI_A1_ISR(void){
+    if (UCA1IFG & UCRXIFG) {
+        char c = UCA1RXBUF;
+        // echo
+        while (!(UCA1IFG & UCTXIFG));
+        UCA1TXBUF = c;
+        while (!(UCA1IFG & UCTXIFG));
+        UCA1TXBUF = '\r';
+        while (!(UCA1IFG & UCTXIFG));
+        UCA1TXBUF = '\n';
+        // flag ADC request on 'u'
+        if (c == 'u') {
+            requestADC = true;
+        }
+        // clear RX flag
+        UCA1IFG &= ~UCRXIFG;
+    }
+    // TX interrupt: drain ring buffer
+    if (UCA1IFG & UCTXIFG) {
+        if (txCount) {
+            UCA1TXBUF = txBuf[txTail++];
+            if (txTail == TX_BUF_SIZE) txTail = 0;
+            txCount--;
+        } else {
+            UCA1IE &= ~UCTXIE;
+        }
+    }
+}
