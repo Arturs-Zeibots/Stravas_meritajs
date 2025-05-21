@@ -42,33 +42,6 @@ volatile int  adcResult;
 volatile int  maxInWindow;
 volatile int  sampleCount;
 
-// ——————————————————————————————
-// fputc() override to enqueue on A1
-// ——————————————————————————————
-int fputc(int ch, FILE *f) {
-    while(txCount == TX_BUF_SIZE);
-
-    _disable_interrupt();
-
-    if (txCount == 0) {
-        UCA1TXBUF = (uint8_t)ch;
-        // enable the interrupt so that when this byte finishes
-        // shifting out, the ISR will take over on the next one
-        UCA1IE |= UCTXIE;
-    } else {
-        // just enqueue it
-        txBuf[txHead++] = (uint8_t)ch;
-        if (txHead == TX_BUF_SIZE) txHead = 0;
-        txCount++;
-    }
-    __enable_interrupt();
-
-    return ch;
-
-}
-
-
-
 //INITIAL FUNCTIONS DEFINITIONS
 void init(void);
 void initEXTCLK(void);
@@ -76,6 +49,20 @@ void initGPIO(void);
 void initADC(void);
 void initUART(void);
 
+int readADC(void);
+
+// wait until TXBUF is ready, then send one character
+void UART_putChar(char c) {
+    while (!(UCA1IFG & UCTXIFG));     // spin until UCTXIFG=1
+    UCA1TXBUF = c;
+}
+
+// send a null-terminated string
+void UART_putString(const char *s) {
+    while (*s) {
+        UART_putChar(*s++);
+    }
+}
 
 //--------------------------------------------------------------------------------
 //MAIN
@@ -85,23 +72,10 @@ int main(void){
     init();  //Calls init function that calls GPIO, ADC, EXTCLK and UART init functions
     __enable_interrupt();
 
+    ADCCTL0 |= ADCENC | ADCSC;  
     while(1){
+
         
-        //reset window
-     //   maxInWindow  = 0;
-      //  sampleCount  = 0;
-
-       // while(sampleCount < WINDOW_SIZE){
-       // ADCCTL0 |= ADCENC | ADCSC;             // start conversion
-       // }
-        //__no_operation();
-
-        //printf("%d\n",adcResult);
-        
-        //printf('\r\n');
-    //__delay_cycles(10000);   // ~0.1 s @ 1 MHz
-
-        UCA1IE |= UCRXIE;
         
     }
 }
@@ -122,10 +96,6 @@ void init(void) {
     initADC();
     initEXTCLK();
     initUART();
-    
-    
-
-    
 }
 //INIT EXTERNAL CLOCK NESTRĀDĀ
 void initEXTCLK(void){
@@ -220,8 +190,19 @@ void initUART(void){
     //setvbuf(stdout, NULL, _IONBF, 0);
 
     // Ensure TX interrupt is _off_ until first byte is written
-    //UCA1IE &= ~UCTXIE;
+    UCA1IE = UCRXIE;
 
+}
+
+int readADC(){
+    maxInWindow  = 0;
+    sampleCount  = 0;
+
+    while(sampleCount < WINDOW_SIZE){
+    ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+    }
+
+    return maxInWindow;
 }
 
 //--------------------------------------------------------------------------------
@@ -230,43 +211,50 @@ void initUART(void){
 void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void){
   
   if (ADCIV == ADCIV_ADCIFG) {
-
             adcResult = ADCMEM0;
         if (adcResult > maxInWindow) {
             maxInWindow = abs(adcResult-IDLE_POINT);
         }
-        sampleCount++;            // Clear CPUOFF bit from LPM0
+        sampleCount++;
   }
 }
 //--------------------------------------------------------------------------------
 //UART INTERRUPT SERVICE ROUTINE
-//--------------------------------------------------------------------------------
-
-#pragma vector=USCI_A0_VECTOR
-__interrupt void USCI_A0_ISR(void)
+//-------------------------------------------------------------------------------
+#pragma vector=USCI_A1_VECTOR
+__interrupt void USCI_A1_ISR(void)
 {
-    switch(__even_in_range(UCA0IV,USCI_UART_UCTXCPTIFG))
+    switch(__even_in_range(UCA1IV,USCI_UART_UCTXCPTIFG))
     {
         case USCI_NONE: break;
-        case USCI_UART_UCRXIFG:
-              UCA0IFG &=~ UCRXIFG;            // Clear interrupt
-              if(UCA1RXBUF == 'u')            // Check value
-              {
-                  UCA1IE |= UCTXIE;
-              }
-              --txCount;                             // increment data byte
-              break;
-        case USCI_UART_UCTXIFG:
-            if (UCA1IFG & UCTXIFG) {
-                if (txCount) {
-                    UCA1TXBUF = txBuf[txTail++];
-                    if (txTail == TX_BUF_SIZE) txTail = 0;
-                    --txCount;
-                } else {
-                    UCA1IE &= ~UCTXIE;    // disable TX interrupt
-                }
+
+    case USCI_UART_UCRXIFG: {
+        char rx = UCA1RXBUF;             // read the received byte
+        int result = readADC();
+        if (rx == 'u') {
+            // format adcResult into ASCII in txBuf[]
+            int len = sprintf((char*)txBuf, "%d\r\n", result);
+            txHead  = len;    // (optional, if you ever use head/tail)
+            txTail  = 0;
+            txCount = len;
+            // fire off TX interrupt
+            UCA1IE |= UCTXIE;
+        }
+        break;
     }
-        case USCI_UART_UCSTTIFG: break;
-        case USCI_UART_UCTXCPTIFG: break;
+
+    case USCI_UART_UCTXIFG:
+        if (txCount) {
+            UCA1TXBUF = txBuf[txTail++];
+            if (txTail >= TX_BUF_SIZE) txTail = 0;
+            --txCount;
+        } else {
+            // nothing left—turn off TX interrupt
+            UCA1IE &= ~UCTXIE;
+        }
+        break;
+
+    default:
+        break;
     }
-}
+    }
