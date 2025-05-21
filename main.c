@@ -147,8 +147,8 @@ void initEXTCLK(void){
 
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
-
-    CSCTL0_H = 0;
+    
+    //CSCTL0_H = 0;
 
     
 }
@@ -182,8 +182,7 @@ void initADC(void){
 }
 
 //INIT UART
-void initUART(void)
-{
+void initUART(void){
     //– Route P2.5→UCA1RXD, P2.6→UCA1TXD
     P2SEL1 &= ~(BIT5 | BIT6);
     P2SEL0 |=  (BIT5 | BIT6);
@@ -208,8 +207,8 @@ void initUART(void)
 //--------------------------------------------------------------------------------
 //ADC INTERRUPT SERVICE ROUTINE
 //--------------------------------------------------------------------------------
-void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void)
-{
+void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void){
+  
   if (ADCIV == ADCIV_ADCIFG) {
     adcResult   = ADCMEM0;
     maxInWindow = adcResult;
