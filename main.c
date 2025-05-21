@@ -46,9 +46,25 @@ volatile int  sampleCount;
 // fputc() override to enqueue on A1
 // ——————————————————————————————
 int fputc(int ch, FILE *f) {
-    while (!(UCA1IFG & UCTXIFG));   // wait for TX ready
-    UCA1TXBUF = (uint8_t)ch;
+    while(txCount == TX_BUF_SIZE);
+
+    _disable_interrupt();
+
+    if (txCount == 0) {
+        UCA1TXBUF = (uint8_t)ch;
+        // enable the interrupt so that when this byte finishes
+        // shifting out, the ISR will take over on the next one
+        UCA1IE |= UCTXIE;
+    } else {
+        // just enqueue it
+        txBuf[txHead++] = (uint8_t)ch;
+        if (txHead == TX_BUF_SIZE) txHead = 0;
+        txCount++;
+    }
+    __enable_interrupt();
+
     return ch;
+
 }
 
 
@@ -60,6 +76,7 @@ void initGPIO(void);
 void initADC(void);
 void initUART(void);
 
+
 //--------------------------------------------------------------------------------
 //MAIN
 //--------------------------------------------------------------------------------
@@ -69,22 +86,22 @@ int main(void){
     __enable_interrupt();
 
     while(1){
-
-        //reset window
-       // maxInWindow  = 0;
-       // sampleCount  = 0;
-
         
-        //ADCCTL0 |= ADCENC | ADCSC;             // start conversion
-       // __bis_SR_register(LPM0_bits);
+        //reset window
+     //   maxInWindow  = 0;
+      //  sampleCount  = 0;
+
+       // while(sampleCount < WINDOW_SIZE){
+       // ADCCTL0 |= ADCENC | ADCSC;             // start conversion
+       // }
         //__no_operation();
 
-       // printf("%d\r\n",adcResult);
-        //__no_operation();
-        //__delay_cycles(10000);    // ~1s @ 1 MHz
+        //printf("%d\n",adcResult);
+        
+        //printf('\r\n');
+    //__delay_cycles(10000);   // ~0.1 s @ 1 MHz
 
-        fputc('A', stdout);
-    __delay_cycles(100000);   // ~0.1 s @ 1 MHz
+        UCA1IE |= UCRXIE;
         
     }
 }
@@ -200,8 +217,11 @@ void initUART(void){
     //– Take eUSCI out of reset
     UCA1CTLW0 &= ~UCSWRST;
 
+    //setvbuf(stdout, NULL, _IONBF, 0);
+
     // Ensure TX interrupt is _off_ until first byte is written
     //UCA1IE &= ~UCTXIE;
+
 }
 
 //--------------------------------------------------------------------------------
@@ -210,25 +230,43 @@ void initUART(void){
 void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void){
   
   if (ADCIV == ADCIV_ADCIFG) {
-    adcResult   = ADCMEM0;
-    maxInWindow = adcResult;
-    sampleCount++;
-    __bic_SR_register_on_exit(LPM0_bits);
+
+            adcResult = ADCMEM0;
+        if (adcResult > maxInWindow) {
+            maxInWindow = abs(adcResult-IDLE_POINT);
+        }
+        sampleCount++;            // Clear CPUOFF bit from LPM0
   }
 }
+//--------------------------------------------------------------------------------
+//UART INTERRUPT SERVICE ROUTINE
+//--------------------------------------------------------------------------------
 
-
-
-#pragma vector=USCI_A1_VECTOR
-__interrupt void USCI_A1_ISR(void) {
-    if (UCA1IFG & UCTXIFG) {
-        if (txCount) {
-            UCA1TXBUF = txBuf[txTail++];
-            if (txTail == TX_BUF_SIZE) txTail = 0;
-            --txCount;
-        } else {
-            UCA1IE &= ~UCTXIE;    // disable TX interrupt
-        }
+#pragma vector=USCI_A0_VECTOR
+__interrupt void USCI_A0_ISR(void)
+{
+    switch(__even_in_range(UCA0IV,USCI_UART_UCTXCPTIFG))
+    {
+        case USCI_NONE: break;
+        case USCI_UART_UCRXIFG:
+              UCA0IFG &=~ UCRXIFG;            // Clear interrupt
+              if(UCA1RXBUF == 'u')            // Check value
+              {
+                  UCA1IE |= UCTXIE;
+              }
+              --txCount;                             // increment data byte
+              break;
+        case USCI_UART_UCTXIFG:
+            if (UCA1IFG & UCTXIFG) {
+                if (txCount) {
+                    UCA1TXBUF = txBuf[txTail++];
+                    if (txTail == TX_BUF_SIZE) txTail = 0;
+                    --txCount;
+                } else {
+                    UCA1IE &= ~UCTXIE;    // disable TX interrupt
+                }
+    }
+        case USCI_UART_UCSTTIFG: break;
+        case USCI_UART_UCTXCPTIFG: break;
     }
 }
-
