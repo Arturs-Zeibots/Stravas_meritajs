@@ -147,7 +147,7 @@ void initEXTCLK(void){
 
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
-    
+
     //CSCTL0_H = 0;
 
     
@@ -192,8 +192,8 @@ void initUART(void){
     UCA1CTLW0 |= UCSSEL__SMCLK;    // clock = SMCLK
 
     //– Baud-rate 9600 @ 1 MHz
-    UCA1BRW    = 104;               // integer divider
-    UCA1MCTLW  = UCOS16 | UCBRS1;  // oversampling + modulation
+    UCA1BRW = 6;                              // 1000000/9600 = 104.167
+    UCA1MCTLW |= UCOS16 | UCBRF_13 | 0x11;     // UCBRSx value = 0x11 (See UG)
 
     UCA1IE &= ~UCTXIE;
 
