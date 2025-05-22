@@ -187,7 +187,7 @@ void initUART(void){
 
     //– Baud-rate 9600 @ 1 MHz
     UCA1BRW = 6;                              // 1000000/9600 = 104.167
-    UCA1MCTLW |= UCOS16 | UCBRF_13 | 0x11;     // UCBRSx value = 0x11 (See UG)
+    UCA1MCTLW |= UCOS16 | UCBRF_13 | 0x11;     // UCBRSx value = 0x11
 
     UCA1IE &= ~UCTXIE;
  
@@ -195,9 +195,7 @@ void initUART(void){
     UCA1CTLW0 &= ~UCSWRST;
 
 
-     UCA1IE   = UCRXIE;
-    //UCA1IE = UCRXIE;
-    //UCA1IE = UCTXIE;
+    UCA1IE   = UCRXIE;
 
 }
 
@@ -219,41 +217,6 @@ void __attribute__((interrupt(ADC_VECTOR))) ADC_ISR(void){
 //--------------------------------------------------------------------------------
 //UART INTERRUPT SERVICE ROUTINE
 //-------------------------------------------------------------------------------
-/*#pragma vector=USCI_A1_VECTOR
-__interrupt void USCI_A1_ISR(void)
-{
-    
-
-    if(UCA1IFG & UCRXIFG){
-        char rx = UCA1RXBUF;  
-        if (rx == 'u') {
-            //fill buffer
-            volatile int result = readADC();
-            int len = sprintf((char*)txBuf, "I=%d\r\n", result);
-
-            //reset
-            txHead  = 0;
-            txTail  = 0;
-            txCount = len;
-            UCA1IFG &= ~UCRXIFG;
-            UCA1IE |= UCTXIE;
-    }
-
-    if (UCA1IFG & UCTXIFG) {
-        if (txCount) {
-            // send next byte from the ring buffer
-            UCA1TXBUF = txBuf[txTail++];
-            if (txTail == TX_BUF_SIZE) txTail = 0;
-            txCount--;
-        } else {
-            // nothing left: turn off TX interrupts
-            UCA1IE &= ~UCTXIE;
-        }
-    }
-}
-
-}*/
-
 #pragma vector=USCI_A1_VECTOR
 __interrupt void USCI_A1_ISR(void){
     if (UCA1IFG & UCRXIFG) {
