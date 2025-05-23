@@ -45,6 +45,7 @@ void initGPIO(void);
 void initADC(void);
 void initUART(void);
 
+//ADC read and wait function
 int readADC(void){
     int maxDiff = 0;
     int i;
@@ -70,19 +71,20 @@ int main(void){
     
 
     while(1){
+        //wait for UART RX interrupt to call ADC conversion
 	if (requestADC) {
             requestADC = false;
 
-            // 1) do the ADC (polled, so no interrupts needed)
+            //do polled ADC
             int result = readADC();
 
-            // 2) format into txBuf
+            //format into txBuf
             int len = sprintf((char*)txBuf, "I=%d\r\n", result);
             txHead  = 0;
             txTail  = 0;
             txCount = len;
 
-            // 3) kick off TX interrupts
+            //start TX interrupt routine
             UCA1IE |= UCTXIE;
         }
     }
@@ -91,7 +93,7 @@ int main(void){
 //--------------------------------------------------------------------------------
 //INITIALIZATION FUNCTIONS
 //--------------------------------------------------------------------------------
-//PRIMARY INIT
+//PRIMARY INIT contain WDT shutoff, calls GPIO, EXTCLK, UART, ADC init functions
 void init(void) {
 
     WDTCTL = WDTPW | WDTHOLD;    //kill WDT
@@ -109,33 +111,29 @@ void init(void) {
 //INIT EXTERNAL CLOCK
 void initEXTCLK(void){
 
-    //CSCTL0_H = 0xA5;
-
     // XT1 crystal on P2.0/P2.1
     P2SEL0 |= (BIT0|BIT1);
     P2SEL1 &=  ~(BIT0|BIT1);
 
     CSCTL7 &= ~XT1OFFG;           // clear XT1 fault flag
     CSCTL7 &= ~(XT1OFFG|DCOFFG);  // clear both fault flags
-    // choose drive strength: lowest first, increase if it doesn’t start
+    // choose drive strength
     CSCTL6 &= ~(XT1BYPASS | XTS);
     CSCTL6 |= XT1DRIVE_3;
-    // Clear fault flags
+    // Clear fault flags until XT1 settles
     do {
     CSCTL7 &= ~(XT1OFFG|DCOFFG);
     SFRIFG1 &= ~OFIFG;
     __delay_cycles(1000);
     } while ((SFRIFG1 & OFIFG));
 
-
-    // Clear fault flags 
+    // Clear and disable fault flags 
     CSCTL7 &= ~(XT1OFFG | DCOFFG);
     SFRIFG1 &= ~OFIFG;
-    _delay_cycles(200);
-    //Clear fault flags and disable fault flags
     SFRIE1 &= ~OFIE;
-    SFRIFG1 &= ~OFIFG;
+    _delay_cycles(200);
 
+    //setup FLL
     CSCTL3 = SELREF__XT1CLK;                // XT1 as FLL reference
     CSCTL1 = DCOFTRIMEN | DCOFTRIM0 | DCOFTRIM1 | DCORSEL_0;
     CSCTL2 = FLLD_0 + 31;                   // DCODIV = 1MHz
@@ -144,7 +142,6 @@ void initEXTCLK(void){
     // Route clocks: MCLK/SMCLK = DCOCLKDIV, ACLK = XT1
     CSCTL4 = SELMS__DCOCLKDIV | SELA__XT1CLK;
 
-    
 }
 
 //INIT GPIO PINS
@@ -159,8 +156,6 @@ void initGPIO(void){
     // Configure GPIO to ADC A0(VEREF+) A2(VEREF-) A3(INPUT) pins
     SYSCFG2 |= ADCPCTL0 | ADCPCTL2 | ADCPCTL3;
                                    
-    
-
 }
 
 //INIT ADC
@@ -177,6 +172,7 @@ void initADC(void){
 
 //INIT UART
 void initUART(void){
+
     //– Route P2.5→UCA1RXD, P2.6→UCA1TXD
     P2SEL1 &= ~(BIT5 | BIT6);
     P2SEL0 |=  (BIT5 | BIT6);
@@ -194,8 +190,8 @@ void initUART(void){
     //– Take eUSCI out of reset
     UCA1CTLW0 &= ~UCSWRST;
 
-
-    UCA1IE   = UCRXIE;
+    //enable RX interrupt
+    UCA1IE = UCRXIE;
 
 }
 
@@ -235,7 +231,7 @@ __interrupt void USCI_A1_ISR(void){
         // clear RX flag
         UCA1IFG &= ~UCRXIFG;
     }
-    // TX interrupt: drain ring buffer
+    // TX interrupt feed txBuf into UART TX buffer
     if (UCA1IFG & UCTXIFG) {
         if (txCount) {
             UCA1TXBUF = txBuf[txTail++];
